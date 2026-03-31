@@ -83,7 +83,7 @@ func TestClientConfig(t *testing.T) {
 			GeoUpdateInterval: 24 * time.Hour,
 			GeoDownloadProxy:  true,
 		},
-		SystemProxy: true,
+		SystemProxy: clientSystemProxyModeAuto,
 		PAC: &clientConfigPAC{
 			Listen: "127.0.0.1:18080",
 		},
@@ -181,9 +181,17 @@ acl:
 
 func TestValidateClientProxyIntegrationConfigRejectsSystemProxyWithoutLocalProxy(t *testing.T) {
 	err := validateClientProxyIntegrationConfig(clientConfig{
-		SystemProxy: true,
+		SystemProxy: clientSystemProxyModeManual,
 	})
 	assert.EqualError(t, err, "invalid config: systemProxy: requires http.listen or socks5.listen to be enabled")
+}
+
+func TestValidateClientProxyIntegrationConfigRejectsAutoSystemProxyWithoutPAC(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		SystemProxy: clientSystemProxyModeAuto,
+		HTTP:        &httpConfig{Listen: "127.0.0.1:8080"},
+	})
+	assert.EqualError(t, err, "invalid config: systemProxy: auto mode requires pac to be configured")
 }
 
 func TestValidateClientProxyIntegrationConfigRejectsPACWithoutLocalProxy(t *testing.T) {
@@ -193,12 +201,35 @@ func TestValidateClientProxyIntegrationConfigRejectsPACWithoutLocalProxy(t *test
 	assert.EqualError(t, err, "invalid config: pac: requires http.listen or socks5.listen to be enabled")
 }
 
+func TestValidateClientProxyIntegrationConfigRejectsInvalidSystemProxyMode(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		SystemProxy: clientSystemProxyMode("pac"),
+	})
+	assert.EqualError(t, err, `invalid config: systemProxy: unsupported mode "pac", want none, auto, or manual`)
+}
+
 func TestValidateClientProxyIntegrationConfigRejectsInvalidPACListen(t *testing.T) {
 	err := validateClientProxyIntegrationConfig(clientConfig{
 		HTTP: &httpConfig{Listen: "127.0.0.1:8080"},
 		PAC:  &clientConfigPAC{Listen: "127.0.0.1"},
 	})
 	assert.EqualError(t, err, "invalid config: pac.listen: address 127.0.0.1: missing port in address")
+}
+
+func TestValidateClientProxyIntegrationConfigAllowsManualSystemProxyWithPAC(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		SystemProxy: clientSystemProxyModeManual,
+		HTTP:        &httpConfig{Listen: "127.0.0.1:8080"},
+		PAC:         &clientConfigPAC{Listen: "127.0.0.1:18080"},
+	})
+	assert.NoError(t, err)
+}
+
+func TestNormalizeClientProxyIntegrationConfigRejectsLegacyBool(t *testing.T) {
+	v := viper.New()
+	v.Set("systemProxy", true)
+	err := normalizeClientProxyIntegrationConfig(v)
+	assert.EqualError(t, err, "invalid config: systemProxy: must be a string enum (none, auto, manual), got bool")
 }
 
 // TestClientConfigURI tests URI-related functions of clientConfig
