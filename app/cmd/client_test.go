@@ -83,6 +83,10 @@ func TestClientConfig(t *testing.T) {
 			GeoUpdateInterval: 24 * time.Hour,
 			GeoDownloadProxy:  true,
 		},
+		SystemProxy: true,
+		PAC: &clientConfigPAC{
+			Listen: "127.0.0.1:18080",
+		},
 		FastOpen: true,
 		Lazy:     true,
 		SOCKS5: &socks5Config{
@@ -173,6 +177,28 @@ acl:
 
 	err = validateClientConfig(v)
 	assert.EqualError(t, err, "invalid config: acl.rules: unsupported in client mode; use acl.inline or acl.file instead")
+}
+
+func TestValidateClientProxyIntegrationConfigRejectsSystemProxyWithoutLocalProxy(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		SystemProxy: true,
+	})
+	assert.EqualError(t, err, "invalid config: systemProxy: requires http.listen or socks5.listen to be enabled")
+}
+
+func TestValidateClientProxyIntegrationConfigRejectsPACWithoutLocalProxy(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		PAC: &clientConfigPAC{Listen: "127.0.0.1:18080"},
+	})
+	assert.EqualError(t, err, "invalid config: pac: requires http.listen or socks5.listen to be enabled")
+}
+
+func TestValidateClientProxyIntegrationConfigRejectsInvalidPACListen(t *testing.T) {
+	err := validateClientProxyIntegrationConfig(clientConfig{
+		HTTP: &httpConfig{Listen: "127.0.0.1:8080"},
+		PAC:  &clientConfigPAC{Listen: "127.0.0.1"},
+	})
+	assert.EqualError(t, err, "invalid config: pac.listen: address 127.0.0.1: missing port in address")
 }
 
 // TestClientConfigURI tests URI-related functions of clientConfig

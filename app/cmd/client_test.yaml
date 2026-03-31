@@ -58,6 +58,11 @@ acl:
   geoUpdateInterval: 24h
   geoDownloadProxy: true
 
+systemProxy: true
+
+pac:
+  listen: 127.0.0.1:18080
+
 fastOpen: true
 
 lazy: true
