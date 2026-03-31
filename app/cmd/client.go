@@ -81,6 +81,8 @@ type clientConfig struct {
 	Bandwidth     clientConfigBandwidth  `mapstructure:"bandwidth"`
 	Resolver      serverConfigResolver   `mapstructure:"resolver"`
 	ACL           clientConfigACL        `mapstructure:"acl"`
+	SystemProxy   bool                   `mapstructure:"systemProxy"`
+	PAC           *clientConfigPAC       `mapstructure:"pac"`
 	FastOpen      bool                   `mapstructure:"fastOpen"`
 	Lazy          bool                   `mapstructure:"lazy"`
 	SOCKS5        *socks5Config          `mapstructure:"socks5"`
@@ -122,6 +124,10 @@ type clientConfigACL struct {
 	GeoSite           string        `mapstructure:"geosite"`
 	GeoUpdateInterval time.Duration `mapstructure:"geoUpdateInterval"`
 	GeoDownloadProxy  bool          `mapstructure:"geoDownloadProxy"`
+}
+
+type clientConfigPAC struct {
+	Listen string `mapstructure:"listen"`
 }
 
 type clientConfigTransportUDP struct {
@@ -825,7 +831,51 @@ func runClient(v *viper.Viper) {
 		_ = c.Close()
 		logger.Fatal("failed to initialize client routing", zap.Error(err))
 	}
-	defer modeClient.Close()
+	cleanup := &clientCleanup{}
+	cleanup.Add(modeClient.Close)
+	defer cleanup.Run()
+
+	var localProxies *localProxySet
+	if config.SystemProxy || config.PAC != nil {
+		localProxies, err = buildLocalProxySet(config)
+		if err != nil {
+			cleanup.Run()
+			logger.Fatal("failed to initialize local proxy integration", zap.Error(err))
+		}
+	}
+
+	var pacSrv *pacServer
+	if config.PAC != nil {
+		pacListen := config.PAC.Listen
+		if pacListen == "" {
+			pacListen = "127.0.0.1:0"
+		}
+		pacSrv, err = newPACServer(pacListen, buildPACScript(localProxies))
+		if err != nil {
+			cleanup.Run()
+			logger.Fatal("failed to initialize PAC server", zap.Error(err))
+		}
+		cleanup.Add(pacSrv.Close)
+		logger.Info("PAC URL ready", zap.String("url", pacSrv.URL()))
+	}
+
+	if config.SystemProxy {
+		pacURL := ""
+		if pacSrv != nil {
+			pacURL = pacSrv.URL()
+		}
+		restoreSystemProxy, err := configureSystemProxy(localProxies, pacURL)
+		if err != nil {
+			cleanup.Run()
+			logger.Fatal("failed to configure system proxy", zap.Error(err))
+		}
+		cleanup.Add(restoreSystemProxy)
+		if pacURL != "" {
+			logger.Info("system proxy configured", zap.String("mode", "pac"), zap.String("url", pacURL))
+		} else {
+			logger.Info("system proxy configured", zap.String("mode", "manual"))
+		}
+	}
 
 	uri := config.URI()
 	if showQR {
@@ -877,6 +927,9 @@ func runClient(v *viper.Viper) {
 			return clientTUN(*config.TUN, modeClient)
 		})
 	}
+	if pacSrv != nil {
+		runner.Add("PAC server", pacSrv.Run)
+	}
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
@@ -894,7 +947,7 @@ func runClient(v *viper.Viper) {
 		if r.OK {
 			logger.Info(r.Msg)
 		} else {
-			_ = modeClient.Close() // Close the client here as Fatal will exit the program without running defer
+			cleanup.Run()
 			if r.Err != nil {
 				logger.Fatal(r.Msg, zap.Error(r.Err))
 			} else {
@@ -914,6 +967,34 @@ func validateClientConfig(v *viper.Viper) error {
 	return nil
 }
 
+func validateClientProxyIntegrationConfig(config clientConfig) error {
+	if config.SystemProxy {
+		if !hasConfiguredLocalProxy(config) {
+			return configError{Field: "systemProxy", Err: errors.New("requires http.listen or socks5.listen to be enabled")}
+		}
+	}
+	if config.PAC != nil {
+		if !hasConfiguredLocalProxy(config) {
+			return configError{Field: "pac", Err: errors.New("requires http.listen or socks5.listen to be enabled")}
+		}
+		if config.PAC.Listen != "" {
+			if _, err := parseLocalProxyEndpoint(config.PAC.Listen); err != nil {
+				return configError{Field: "pac.listen", Err: err}
+			}
+		}
+	}
+	if config.SystemProxy || config.PAC != nil {
+		if _, err := buildLocalProxySet(config); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasConfiguredLocalProxy(config clientConfig) bool {
+	return (config.HTTP != nil && config.HTTP.Listen != "") || (config.SOCKS5 != nil && config.SOCKS5.Listen != "")
+}
+
 func loadClientConfig(v *viper.Viper) (clientConfig, error) {
 	if err := v.ReadInConfig(); err != nil {
 		return clientConfig{}, err
@@ -923,6 +1004,9 @@ func loadClientConfig(v *viper.Viper) (clientConfig, error) {
 	}
 	var config clientConfig
 	if err := v.Unmarshal(&config); err != nil {
+		return clientConfig{}, err
+	}
+	if err := validateClientProxyIntegrationConfig(config); err != nil {
 		return clientConfig{}, err
 	}
 	return config, nil
