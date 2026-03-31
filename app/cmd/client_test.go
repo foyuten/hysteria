@@ -3,6 +3,7 @@ package cmd
 import (
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,25 @@ func TestClientConfig(t *testing.T) {
 			Up:   "200 mbps",
 			Down: "1 gbps",
 		},
+		Resolver: serverConfigResolver{
+			Type: "https",
+			HTTPS: serverConfigResolverHTTPS{
+				Addr:     "dns.example.net",
+				Timeout:  5 * time.Second,
+				SNI:      "resolver.example.net",
+				Insecure: true,
+			},
+		},
+		ACL: clientConfigACL{
+			Inline: []string{
+				"direct(localhost)",
+				"reject(blocked.example)",
+			},
+			GeoIP:             "client_geoip.dat",
+			GeoSite:           "client_geosite.dat",
+			GeoUpdateInterval: 24 * time.Hour,
+			GeoDownloadProxy:  true,
+		},
 		FastOpen: true,
 		Lazy:     true,
 		SOCKS5: &socks5Config{
@@ -125,6 +145,36 @@ func TestClientConfig(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestValidateClientConfigRejectsOutbounds(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	err := v.ReadConfig(strings.NewReader(`
+server: example.com
+outbounds:
+  - name: ambiguous
+    type: direct
+`))
+	assert.NoError(t, err)
+
+	err = validateClientConfig(v)
+	assert.EqualError(t, err, "invalid config: outbounds: unsupported in client mode; use acl.file or acl.inline with built-in proxy/direct/reject instead")
+}
+
+func TestValidateClientConfigRejectsACLRules(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	err := v.ReadConfig(strings.NewReader(`
+server: example.com
+acl:
+  rules:
+    - direct(localhost)
+`))
+	assert.NoError(t, err)
+
+	err = validateClientConfig(v)
+	assert.EqualError(t, err, "invalid config: acl.rules: unsupported in client mode; use acl.inline or acl.file instead")
 }
 
 // TestClientConfigURI tests URI-related functions of clientConfig

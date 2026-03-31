@@ -79,6 +79,8 @@ type clientConfig struct {
 	QUIC          clientConfigQUIC       `mapstructure:"quic"`
 	Congestion    clientConfigCongestion `mapstructure:"congestion"`
 	Bandwidth     clientConfigBandwidth  `mapstructure:"bandwidth"`
+	Resolver      serverConfigResolver   `mapstructure:"resolver"`
+	ACL           clientConfigACL        `mapstructure:"acl"`
 	FastOpen      bool                   `mapstructure:"fastOpen"`
 	Lazy          bool                   `mapstructure:"lazy"`
 	SOCKS5        *socks5Config          `mapstructure:"socks5"`
@@ -96,6 +98,15 @@ type clientConfigRealm struct {
 	STUNTimeout  time.Duration `mapstructure:"stunTimeout"`
 	PunchTimeout time.Duration `mapstructure:"punchTimeout"`
 	Insecure     bool          `mapstructure:"insecure"`
+}
+
+type clientConfigACL struct {
+	File              string        `mapstructure:"file"`
+	Inline            []string      `mapstructure:"inline"`
+	GeoIP             string        `mapstructure:"geoip"`
+	GeoSite           string        `mapstructure:"geosite"`
+	GeoUpdateInterval time.Duration `mapstructure:"geoUpdateInterval"`
+	GeoDownloadProxy  bool          `mapstructure:"geoDownloadProxy"`
 }
 
 type clientConfigTransportUDP struct {
@@ -742,12 +753,9 @@ func runClientCmd(cmd *cobra.Command, args []string) {
 }
 
 func runClient(v *viper.Viper) {
-	if err := v.ReadInConfig(); err != nil {
-		logger.Fatal("failed to read client config", zap.Error(err))
-	}
-	var config clientConfig
-	if err := v.Unmarshal(&config); err != nil {
-		logger.Fatal("failed to parse client config", zap.Error(err))
+	config, err := loadClientConfig(v)
+	if err != nil {
+		logger.Fatal("failed to load client config", zap.Error(err))
 	}
 
 	c, err := client.NewReconnectableClient(
@@ -766,7 +774,12 @@ func runClient(v *viper.Viper) {
 	if err != nil {
 		logger.Fatal("failed to initialize client", zap.Error(err))
 	}
-	defer c.Close()
+	modeClient, err := config.buildModeClient(c)
+	if err != nil {
+		_ = c.Close()
+		logger.Fatal("failed to initialize client routing", zap.Error(err))
+	}
+	defer modeClient.Close()
 
 	uri := config.URI()
 	if showQR {
@@ -780,12 +793,12 @@ func runClient(v *viper.Viper) {
 	var runner clientModeRunner
 	if config.SOCKS5 != nil {
 		runner.Add("SOCKS5 server", func() error {
-			return clientSOCKS5(*config.SOCKS5, c)
+			return clientSOCKS5(*config.SOCKS5, modeClient)
 		})
 	}
 	if config.HTTP != nil {
 		runner.Add("HTTP proxy server", func() error {
-			return clientHTTP(*config.HTTP, c)
+			return clientHTTP(*config.HTTP, modeClient)
 		})
 	}
 	if len(config.TCPForwarding) > 0 {
@@ -800,22 +813,22 @@ func runClient(v *viper.Viper) {
 	}
 	if config.TCPTProxy != nil {
 		runner.Add("TCP transparent proxy", func() error {
-			return clientTCPTProxy(*config.TCPTProxy, c)
+			return clientTCPTProxy(*config.TCPTProxy, modeClient)
 		})
 	}
 	if config.UDPTProxy != nil {
 		runner.Add("UDP transparent proxy", func() error {
-			return clientUDPTProxy(*config.UDPTProxy, c)
+			return clientUDPTProxy(*config.UDPTProxy, modeClient)
 		})
 	}
 	if config.TCPRedirect != nil {
 		runner.Add("TCP redirect", func() error {
-			return clientTCPRedirect(*config.TCPRedirect, c)
+			return clientTCPRedirect(*config.TCPRedirect, modeClient)
 		})
 	}
 	if config.TUN != nil {
 		runner.Add("TUN", func() error {
-			return clientTUN(*config.TUN, c)
+			return clientTUN(*config.TUN, modeClient)
 		})
 	}
 
@@ -835,7 +848,7 @@ func runClient(v *viper.Viper) {
 		if r.OK {
 			logger.Info(r.Msg)
 		} else {
-			_ = c.Close() // Close the client here as Fatal will exit the program without running defer
+			_ = modeClient.Close() // Close the client here as Fatal will exit the program without running defer
 			if r.Err != nil {
 				logger.Fatal(r.Msg, zap.Error(r.Err))
 			} else {
@@ -843,6 +856,30 @@ func runClient(v *viper.Viper) {
 			}
 		}
 	}
+}
+
+func validateClientConfig(v *viper.Viper) error {
+	if v.IsSet("outbounds") {
+		return configError{Field: "outbounds", Err: errors.New("unsupported in client mode; use acl.file or acl.inline with built-in proxy/direct/reject instead")}
+	}
+	if v.IsSet("acl.rules") {
+		return configError{Field: "acl.rules", Err: errors.New("unsupported in client mode; use acl.inline or acl.file instead")}
+	}
+	return nil
+}
+
+func loadClientConfig(v *viper.Viper) (clientConfig, error) {
+	if err := v.ReadInConfig(); err != nil {
+		return clientConfig{}, err
+	}
+	if err := validateClientConfig(v); err != nil {
+		return clientConfig{}, err
+	}
+	var config clientConfig
+	if err := v.Unmarshal(&config); err != nil {
+		return clientConfig{}, err
+	}
+	return config, nil
 }
 
 type clientModeRunner struct {
