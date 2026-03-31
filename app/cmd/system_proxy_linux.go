@@ -39,7 +39,7 @@ func configureSystemProxy(proxies *localProxySet, pacURL string) (func() error, 
 		return nil, err
 	}
 	if pacURL != "" {
-		err = applyGSettingsPAC(pacURL)
+		err = applyGSettingsPAC(proxies, pacURL)
 	} else {
 		err = applyGSettingsManual(proxies)
 	}
@@ -73,7 +73,12 @@ func restoreGSettingsValues(values []gsettingsValue) error {
 	return firstErr
 }
 
-func applyGSettingsPAC(pacURL string) error {
+func applyGSettingsPAC(proxies *localProxySet, pacURL string) error {
+	if proxies != nil && proxies.HasAny() {
+		if err := applyGSettingsEndpoints(proxies); err != nil {
+			return err
+		}
+	}
 	if err := gsettingsSet("org.gnome.system.proxy", "autoconfig-url", quoteGSettingsString(pacURL)); err != nil {
 		return err
 	}
@@ -84,6 +89,16 @@ func applyGSettingsManual(proxies *localProxySet) error {
 	if proxies == nil || !proxies.HasAny() {
 		return errors.New("no local proxy endpoints available")
 	}
+	if err := applyGSettingsEndpoints(proxies); err != nil {
+		return err
+	}
+	if err := gsettingsSet("org.gnome.system.proxy", "autoconfig-url", quoteGSettingsString("")); err != nil {
+		return err
+	}
+	return gsettingsSet("org.gnome.system.proxy", "mode", quoteGSettingsString("manual"))
+}
+
+func applyGSettingsEndpoints(proxies *localProxySet) error {
 	if proxies.HTTP != nil {
 		if err := gsettingsSet("org.gnome.system.proxy.http", "host", quoteGSettingsString(proxies.HTTP.Host)); err != nil {
 			return err
@@ -126,10 +141,7 @@ func applyGSettingsManual(proxies *localProxySet) error {
 			return err
 		}
 	}
-	if err := gsettingsSet("org.gnome.system.proxy", "autoconfig-url", quoteGSettingsString("")); err != nil {
-		return err
-	}
-	return gsettingsSet("org.gnome.system.proxy", "mode", quoteGSettingsString("manual"))
+	return nil
 }
 
 func gsettingsGet(schema, key string) (string, error) {
