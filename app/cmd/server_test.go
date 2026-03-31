@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -194,6 +195,21 @@ func TestServerConfig(t *testing.T) {
 			ForceHTTPS:  true,
 		},
 	})
+}
+
+func TestValidateServerConfigRejectsACLRules(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	err := v.ReadConfig(strings.NewReader(`
+listen: :8443
+acl:
+  rules:
+    - direct(all)
+`))
+	assert.NoError(t, err)
+
+	err = validateServerConfig(v)
+	assert.EqualError(t, err, "invalid config: acl.rules: unsupported in server mode; use acl.inline or acl.file instead")
 }
 
 func TestServerFillCongestionConfig(t *testing.T) {
