@@ -81,7 +81,7 @@ type clientConfig struct {
 	Bandwidth     clientConfigBandwidth  `mapstructure:"bandwidth"`
 	Resolver      serverConfigResolver   `mapstructure:"resolver"`
 	ACL           clientConfigACL        `mapstructure:"acl"`
-	SystemProxy   bool                   `mapstructure:"systemProxy"`
+	SystemProxy   clientSystemProxyMode  `mapstructure:"systemProxy"`
 	PAC           *clientConfigPAC       `mapstructure:"pac"`
 	FastOpen      bool                   `mapstructure:"fastOpen"`
 	Lazy          bool                   `mapstructure:"lazy"`
@@ -128,6 +128,40 @@ type clientConfigACL struct {
 
 type clientConfigPAC struct {
 	Listen string `mapstructure:"listen"`
+}
+
+type clientSystemProxyMode string
+
+const (
+	clientSystemProxyModeNone   clientSystemProxyMode = "none"
+	clientSystemProxyModeAuto   clientSystemProxyMode = "auto"
+	clientSystemProxyModeManual clientSystemProxyMode = "manual"
+)
+
+func (m clientSystemProxyMode) normalized() clientSystemProxyMode {
+	switch clientSystemProxyMode(strings.ToLower(strings.TrimSpace(string(m)))) {
+	case "", clientSystemProxyModeNone:
+		return clientSystemProxyModeNone
+	case clientSystemProxyModeAuto:
+		return clientSystemProxyModeAuto
+	case clientSystemProxyModeManual:
+		return clientSystemProxyModeManual
+	default:
+		return clientSystemProxyMode(strings.ToLower(strings.TrimSpace(string(m))))
+	}
+}
+
+func (m clientSystemProxyMode) valid() bool {
+	switch m.normalized() {
+	case clientSystemProxyModeNone, clientSystemProxyModeAuto, clientSystemProxyModeManual:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m clientSystemProxyMode) enabled() bool {
+	return m.normalized() != clientSystemProxyModeNone
 }
 
 type clientConfigTransportUDP struct {
@@ -834,9 +868,10 @@ func runClient(v *viper.Viper) {
 	cleanup := &clientCleanup{}
 	cleanup.Add(modeClient.Close)
 	defer cleanup.Run()
+	systemProxyMode := config.SystemProxy.normalized()
 
 	var localProxies *localProxySet
-	if config.SystemProxy || config.PAC != nil {
+	if systemProxyMode.enabled() || config.PAC != nil {
 		localProxies, err = buildLocalProxySet(config)
 		if err != nil {
 			cleanup.Run()
@@ -859,9 +894,13 @@ func runClient(v *viper.Viper) {
 		logger.Info("PAC URL ready", zap.String("url", pacSrv.URL()))
 	}
 
-	if config.SystemProxy {
+	if systemProxyMode.enabled() {
 		pacURL := ""
-		if pacSrv != nil {
+		if systemProxyMode == clientSystemProxyModeAuto {
+			if pacSrv == nil {
+				cleanup.Run()
+				logger.Fatal("failed to configure system proxy", zap.String("mode", string(systemProxyMode)), zap.Error(errors.New("PAC server is not configured")))
+			}
 			pacURL = pacSrv.URL()
 		}
 		restoreSystemProxy, err := configureSystemProxy(localProxies, pacURL)
@@ -870,10 +909,10 @@ func runClient(v *viper.Viper) {
 			logger.Fatal("failed to configure system proxy", zap.Error(err))
 		}
 		cleanup.Add(restoreSystemProxy)
-		if pacURL != "" {
-			logger.Info("system proxy configured", zap.String("mode", "pac"), zap.String("url", pacURL))
+		if systemProxyMode == clientSystemProxyModeAuto {
+			logger.Info("system proxy configured", zap.String("mode", string(systemProxyMode)), zap.String("url", pacURL))
 		} else {
-			logger.Info("system proxy configured", zap.String("mode", "manual"))
+			logger.Info("system proxy configured", zap.String("mode", string(systemProxyMode)))
 		}
 	}
 
@@ -968,7 +1007,14 @@ func validateClientConfig(v *viper.Viper) error {
 }
 
 func validateClientProxyIntegrationConfig(config clientConfig) error {
-	if config.SystemProxy {
+	config.SystemProxy = config.SystemProxy.normalized()
+	if !config.SystemProxy.valid() {
+		return configError{Field: "systemProxy", Err: fmt.Errorf("unsupported mode %q, want none, auto, or manual", string(config.SystemProxy))}
+	}
+	if config.SystemProxy == clientSystemProxyModeAuto && config.PAC == nil {
+		return configError{Field: "systemProxy", Err: errors.New("auto mode requires pac to be configured")}
+	}
+	if config.SystemProxy.enabled() {
 		if !hasConfiguredLocalProxy(config) {
 			return configError{Field: "systemProxy", Err: errors.New("requires http.listen or socks5.listen to be enabled")}
 		}
@@ -983,7 +1029,7 @@ func validateClientProxyIntegrationConfig(config clientConfig) error {
 			}
 		}
 	}
-	if config.SystemProxy || config.PAC != nil {
+	if config.SystemProxy.enabled() || config.PAC != nil {
 		if _, err := buildLocalProxySet(config); err != nil {
 			return err
 		}
@@ -1002,14 +1048,31 @@ func loadClientConfig(v *viper.Viper) (clientConfig, error) {
 	if err := validateClientConfig(v); err != nil {
 		return clientConfig{}, err
 	}
+	if err := normalizeClientProxyIntegrationConfig(v); err != nil {
+		return clientConfig{}, err
+	}
 	var config clientConfig
 	if err := v.Unmarshal(&config); err != nil {
 		return clientConfig{}, err
 	}
+	config.SystemProxy = config.SystemProxy.normalized()
 	if err := validateClientProxyIntegrationConfig(config); err != nil {
 		return clientConfig{}, err
 	}
 	return config, nil
+}
+
+func normalizeClientProxyIntegrationConfig(v *viper.Viper) error {
+	if !v.IsSet("systemProxy") {
+		return nil
+	}
+	switch value := v.Get("systemProxy").(type) {
+	case string:
+		v.Set("systemProxy", string(clientSystemProxyMode(value).normalized()))
+	default:
+		return configError{Field: "systemProxy", Err: fmt.Errorf("must be a string enum (none, auto, manual), got %T", value)}
+	}
+	return nil
 }
 
 type clientModeRunner struct {

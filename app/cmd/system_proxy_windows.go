@@ -32,7 +32,7 @@ func configureSystemProxy(proxies *localProxySet, pacURL string) (func() error, 
 		return nil, err
 	}
 	if pacURL != "" {
-		err = applyWindowsPAC(pacURL)
+		err = applyWindowsPAC(proxies, pacURL)
 	} else {
 		err = applyWindowsManual(proxies)
 	}
@@ -99,35 +99,32 @@ func restoreWindowsProxyState(state *windowsProxyState) error {
 	return nil
 }
 
-func applyWindowsPAC(pacURL string) error {
+func applyWindowsPAC(proxies *localProxySet, pacURL string) error {
+	proxyServer, err := buildWindowsProxyServer(proxies)
+	if err != nil {
+		return err
+	}
 	key, err := registry.OpenKey(registry.CURRENT_USER, winInternetSettingsPath, registry.SET_VALUE)
 	if err != nil {
 		return err
 	}
 	defer key.Close()
-	if err := key.SetDWordValue("ProxyEnable", 0); err != nil {
+	if err := key.SetDWordValue("ProxyEnable", 1); err != nil {
 		return err
 	}
 	if err := key.SetStringValue("AutoConfigURL", pacURL); err != nil {
 		return err
 	}
-	if err := key.SetStringValue("ProxyServer", ""); err != nil {
+	if err := key.SetStringValue("ProxyServer", proxyServer); err != nil {
 		return err
 	}
 	return notifyWindowsProxyChanged()
 }
 
 func applyWindowsManual(proxies *localProxySet) error {
-	if proxies == nil || !proxies.HasAny() {
-		return errors.New("no local proxy endpoints available")
-	}
-	parts := make([]string, 0, 3)
-	if proxies.HTTP != nil {
-		parts = append(parts, fmt.Sprintf("http=%s", proxies.HTTP.Addr()))
-		parts = append(parts, fmt.Sprintf("https=%s", proxies.HTTP.Addr()))
-	}
-	if proxies.SOCKS5 != nil {
-		parts = append(parts, fmt.Sprintf("socks=%s", proxies.SOCKS5.Addr()))
+	proxyServer, err := buildWindowsProxyServer(proxies)
+	if err != nil {
+		return err
 	}
 	key, err := registry.OpenKey(registry.CURRENT_USER, winInternetSettingsPath, registry.SET_VALUE)
 	if err != nil {
@@ -140,10 +137,25 @@ func applyWindowsManual(proxies *localProxySet) error {
 	if err := key.SetStringValue("AutoConfigURL", ""); err != nil {
 		return err
 	}
-	if err := key.SetStringValue("ProxyServer", strings.Join(parts, ";")); err != nil {
+	if err := key.SetStringValue("ProxyServer", proxyServer); err != nil {
 		return err
 	}
 	return notifyWindowsProxyChanged()
+}
+
+func buildWindowsProxyServer(proxies *localProxySet) (string, error) {
+	if proxies == nil || !proxies.HasAny() {
+		return "", errors.New("no local proxy endpoints available")
+	}
+	parts := make([]string, 0, 3)
+	if proxies.HTTP != nil {
+		parts = append(parts, fmt.Sprintf("http=%s", proxies.HTTP.Addr()))
+		parts = append(parts, fmt.Sprintf("https=%s", proxies.HTTP.Addr()))
+	}
+	if proxies.SOCKS5 != nil {
+		parts = append(parts, fmt.Sprintf("socks=%s", proxies.SOCKS5.Addr()))
+	}
+	return strings.Join(parts, ";"), nil
 }
 
 func notifyWindowsProxyChanged() error {
