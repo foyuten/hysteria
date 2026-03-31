@@ -41,6 +41,23 @@ bandwidth:
   up: 200 mbps
   down: 1 gbps
 
+resolver:
+  type: https
+  https:
+    addr: dns.example.net
+    timeout: 5s
+    sni: resolver.example.net
+    insecure: true
+
+acl:
+  inline:
+    - direct(localhost)
+    - reject(blocked.example)
+  geoip: client_geoip.dat
+  geosite: client_geosite.dat
+  geoUpdateInterval: 24h
+  geoDownloadProxy: true
+
 fastOpen: true
 
 lazy: true
