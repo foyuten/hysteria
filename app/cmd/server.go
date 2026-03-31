@@ -1302,14 +1302,25 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	}
 	if c.ACL.File != "" {
 		hasACL = true
-		acl, err := outbounds.NewACLEngineFromFile(c.ACL.File, obs, gLoader)
+		ruleBytes, err := os.ReadFile(c.ACL.File)
+		if err != nil {
+			return configError{Field: "acl.file", Err: err}
+		}
+		if err := gLoader.Preload(utils.GeoDependenciesFromRuleText(string(ruleBytes))); err != nil {
+			return configError{Field: "acl.file", Err: err}
+		}
+		acl, err := outbounds.NewACLEngineFromString(string(ruleBytes), obs, gLoader)
 		if err != nil {
 			return configError{Field: "acl.file", Err: err}
 		}
 		uOb = acl
 	} else if len(c.ACL.Inline) > 0 {
 		hasACL = true
-		acl, err := outbounds.NewACLEngineFromString(strings.Join(c.ACL.Inline, "\n"), obs, gLoader)
+		ruleText := strings.Join(c.ACL.Inline, "\n")
+		if err := gLoader.Preload(utils.GeoDependenciesFromRuleText(ruleText)); err != nil {
+			return configError{Field: "acl.inline", Err: err}
+		}
+		acl, err := outbounds.NewACLEngineFromString(ruleText, obs, gLoader)
 		if err != nil {
 			return configError{Field: "acl.inline", Err: err}
 		}
@@ -1602,6 +1613,9 @@ func runServer(v *viper.Viper) {
 	if err := v.ReadInConfig(); err != nil {
 		logger.Fatal("failed to read server config", zap.Error(err))
 	}
+	if err := validateServerConfig(v); err != nil {
+		logger.Fatal("failed to parse server config", zap.Error(err))
+	}
 	var config serverConfig
 	if err := v.Unmarshal(&config); err != nil {
 		logger.Fatal("failed to parse server config", zap.Error(err))
@@ -1648,6 +1662,13 @@ func runServer(v *viper.Viper) {
 			logger.Fatal("failed to serve", zap.Error(err))
 		}
 	}
+}
+
+func validateServerConfig(v *viper.Viper) error {
+	if v.IsSet("acl.rules") {
+		return configError{Field: "acl.rules", Err: errors.New("unsupported in server mode; use acl.inline or acl.file instead")}
+	}
+	return nil
 }
 
 func runTrafficStatsServer(listen string, handler http.Handler) {
