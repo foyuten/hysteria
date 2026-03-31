@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/apernet/hysteria/extras/v2/outbounds/acl"
@@ -30,12 +31,49 @@ type GeoLoader struct {
 	GeoIPFilename   string
 	GeoSiteFilename string
 	UpdateInterval  time.Duration
+	HTTPClient      *http.Client
 
 	DownloadFunc    func(filename, url string)
 	DownloadErrFunc func(err error)
 
 	geoipMap   map[string]*v2geo.GeoIP
 	geositeMap map[string]*v2geo.GeoSite
+}
+
+func (l *GeoLoader) preloadFromRuleText(ruleText string) error {
+	needsGeoIP, needsGeoSite := GeoDependenciesFromRuleText(ruleText)
+	return l.Preload(needsGeoIP, needsGeoSite)
+}
+
+func (l *GeoLoader) Preload(needsGeoIP, needsGeoSite bool) error {
+	if needsGeoIP {
+		if _, err := l.LoadGeoIP(); err != nil {
+			return err
+		}
+	}
+	if needsGeoSite {
+		if _, err := l.LoadGeoSite(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func GeoDependenciesFromRuleText(ruleText string) (needsGeoIP, needsGeoSite bool) {
+	text := strings.ToLower(ruleText)
+	return strings.Contains(text, "geoip:"), strings.Contains(text, "geosite:")
+}
+
+func (l *GeoLoader) notifyDownload(filename, url string) {
+	if l.DownloadFunc != nil {
+		l.DownloadFunc(filename, url)
+	}
+}
+
+func (l *GeoLoader) notifyDownloadError(err error) {
+	if l.DownloadErrFunc != nil {
+		l.DownloadErrFunc(err)
+	}
 }
 
 func (l *GeoLoader) shouldDownload(filename string) bool {
@@ -47,7 +85,7 @@ func (l *GeoLoader) shouldDownload(filename string) bool {
 		// empty files are loadable by v2geo, but we consider it broken
 		return true
 	}
-	dt := time.Now().Sub(info.ModTime())
+	dt := time.Since(info.ModTime())
 	if l.UpdateInterval == 0 {
 		return dt > geoDefaultUpdateInterval
 	} else {
@@ -56,18 +94,27 @@ func (l *GeoLoader) shouldDownload(filename string) bool {
 }
 
 func (l *GeoLoader) downloadAndCheck(filename, url string, checkFunc func(filename string) error) error {
-	l.DownloadFunc(filename, url)
+	l.notifyDownload(filename, url)
 
-	resp, err := http.Get(url)
+	hc := l.HTTPClient
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Get(url)
 	if err != nil {
-		l.DownloadErrFunc(err)
+		l.notifyDownloadError(err)
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err = fmt.Errorf("unexpected HTTP status: %s", resp.Status)
+		l.notifyDownloadError(err)
+		return err
+	}
 
 	f, err := os.CreateTemp(".", geoDlTmpPattern)
 	if err != nil {
-		l.DownloadErrFunc(err)
+		l.notifyDownloadError(err)
 		return err
 	}
 	defer os.Remove(f.Name())
@@ -75,20 +122,20 @@ func (l *GeoLoader) downloadAndCheck(filename, url string, checkFunc func(filena
 	_, err = io.Copy(f, resp.Body)
 	if err != nil {
 		f.Close()
-		l.DownloadErrFunc(err)
+		l.notifyDownloadError(err)
 		return err
 	}
 	f.Close()
 
 	err = checkFunc(f.Name())
 	if err != nil {
-		l.DownloadErrFunc(fmt.Errorf("integrity check failed: %w", err))
+		l.notifyDownloadError(fmt.Errorf("integrity check failed: %w", err))
 		return err
 	}
 
 	err = os.Rename(f.Name(), filename)
 	if err != nil {
-		l.DownloadErrFunc(fmt.Errorf("rename failed: %w", err))
+		l.notifyDownloadError(fmt.Errorf("rename failed: %w", err))
 		return err
 	}
 
