@@ -52,6 +52,12 @@ func (c *recordingClient) TCPCalls() []string {
 	return append([]string(nil), c.tcpCalls...)
 }
 
+func (c *recordingClient) UDPCalls() int {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.udpCalls
+}
+
 type recordingHyUDPConn struct {
 	recvCh chan routedUDPPacket
 }
@@ -238,6 +244,41 @@ func TestRoutedHyUDPConnReusesSingleProxySession(t *testing.T) {
 		"alpha.example:53=one",
 		"beta.example:53=two",
 	}, packets)
+}
+
+func TestRoutedClientKeepsProxyUDPSessionsIndependent(t *testing.T) {
+	base := &recordingClient{}
+	modeClient, err := (&clientConfig{
+		ACL: clientConfigACL{Inline: []string{"reject(blocked.example)"}},
+	}).buildModeClient(base)
+	require.NoError(t, err)
+
+	first, err := modeClient.UDP()
+	require.NoError(t, err)
+	defer first.Close()
+	second, err := modeClient.UDP()
+	require.NoError(t, err)
+	defer second.Close()
+
+	require.NoError(t, first.Send([]byte("first"), "first.example:53"))
+	require.NoError(t, second.Send([]byte("second"), "second.example:53"))
+	assert.Equal(t, 2, base.UDPCalls())
+
+	data, addr, err := first.Receive()
+	require.NoError(t, err)
+	assert.Equal(t, "first", string(data))
+	assert.Equal(t, "first.example:53", addr)
+	data, addr, err = second.Receive()
+	require.NoError(t, err)
+	assert.Equal(t, "second", string(data))
+	assert.Equal(t, "second.example:53", addr)
+
+	require.NoError(t, first.Close())
+	require.NoError(t, second.Send([]byte("still open"), "third.example:53"))
+	data, addr, err = second.Receive()
+	require.NoError(t, err)
+	assert.Equal(t, "still open", string(data))
+	assert.Equal(t, "third.example:53", addr)
 }
 
 func TestClientACLDebugLogsMatchedStrategies(t *testing.T) {

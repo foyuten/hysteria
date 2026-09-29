@@ -175,8 +175,9 @@ func (o *clientProxyOutbound) clearUDPConn(conn *clientProxySharedUDPConn) {
 }
 
 type routedClient struct {
-	Base     client.Client
-	Outbound outbounds.PluggableOutbound
+	Base               client.Client
+	Outbound           outbounds.PluggableOutbound
+	UDPOutboundFactory func() (outbounds.PluggableOutbound, error)
 }
 
 func (c *routedClient) TCP(addr string) (net.Conn, error) {
@@ -188,7 +189,15 @@ func (c *routedClient) TCP(addr string) (net.Conn, error) {
 }
 
 func (c *routedClient) UDP() (client.HyUDPConn, error) {
-	return newRoutedHyUDPConn(c.Outbound), nil
+	outbound := c.Outbound
+	if c.UDPOutboundFactory != nil {
+		var err error
+		outbound, err = c.UDPOutboundFactory()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return newRoutedHyUDPConn(outbound), nil
 }
 
 func (c *routedClient) Close() error {
@@ -418,11 +427,21 @@ func (c *clientConfig) buildModeClient(base client.Client) (client.Client, error
 	if !c.hasClientRoutingConfig() {
 		return base, nil
 	}
-	ob, err := c.buildClientOutbound(base)
+	gLoader, err := newClientGeoLoader(c.ACL, base)
 	if err != nil {
 		return nil, err
 	}
-	return &routedClient{Base: base, Outbound: ob}, nil
+	ob, err := c.buildClientOutboundWithGeoLoader(base, gLoader)
+	if err != nil {
+		return nil, err
+	}
+	return &routedClient{
+		Base:     base,
+		Outbound: ob,
+		UDPOutboundFactory: func() (outbounds.PluggableOutbound, error) {
+			return c.buildClientOutboundWithGeoLoader(base, gLoader)
+		},
+	}, nil
 }
 
 func (c *clientConfig) hasClientRoutingConfig() bool {
@@ -430,6 +449,17 @@ func (c *clientConfig) hasClientRoutingConfig() bool {
 }
 
 func (c *clientConfig) buildClientOutbound(base client.Client) (outbounds.PluggableOutbound, error) {
+	if !c.hasClientRoutingConfig() {
+		return nil, errClientRoutingDisabled
+	}
+	gLoader, err := newClientGeoLoader(c.ACL, base)
+	if err != nil {
+		return nil, err
+	}
+	return c.buildClientOutboundWithGeoLoader(base, gLoader)
+}
+
+func (c *clientConfig) buildClientOutboundWithGeoLoader(base client.Client, gLoader *utils.GeoLoader) (outbounds.PluggableOutbound, error) {
 	if !c.hasClientRoutingConfig() {
 		return nil, errClientRoutingDisabled
 	}
@@ -449,7 +479,7 @@ func (c *clientConfig) buildClientOutbound(base client.Client) (outbounds.Plugga
 		}
 		var hasACL bool
 		var err error
-		unified, hasACL, err = buildClientACL(c.ACL, obs, base)
+		unified, hasACL, err = buildClientACLWithGeoLoader(c.ACL, obs, gLoader)
 		if err != nil {
 			return nil, err
 		}
@@ -462,6 +492,14 @@ func (c *clientConfig) buildClientOutbound(base client.Client) (outbounds.Plugga
 }
 
 func buildClientACL(cfg clientConfigACL, obs []outbounds.OutboundEntry, base client.Client) (outbounds.PluggableOutbound, bool, error) {
+	gLoader, err := newClientGeoLoader(cfg, base)
+	if err != nil {
+		return nil, false, err
+	}
+	return buildClientACLWithGeoLoader(cfg, obs, gLoader)
+}
+
+func buildClientACLWithGeoLoader(cfg clientConfigACL, obs []outbounds.OutboundEntry, gLoader *utils.GeoLoader) (outbounds.PluggableOutbound, bool, error) {
 	if cfg.File != "" && len(cfg.Inline) > 0 {
 		return nil, false, configError{Field: "acl", Err: errors.New("cannot set both acl.file and acl.inline")}
 	}
@@ -470,10 +508,6 @@ func buildClientACL(cfg clientConfigACL, obs []outbounds.OutboundEntry, base cli
 			return nil, false, nil
 		}
 		return obs[0].Outbound, false, nil
-	}
-	gLoader, err := newClientGeoLoader(cfg, base)
-	if err != nil {
-		return nil, false, err
 	}
 	if cfg.File != "" {
 		ruleBytes, err := os.ReadFile(cfg.File)
