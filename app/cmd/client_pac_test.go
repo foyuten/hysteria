@@ -51,6 +51,28 @@ func TestBuildPACProxyChain(t *testing.T) {
 	assert.Equal(t, "PROXY 127.0.0.1:8080; SOCKS5 127.0.0.1:1080; DIRECT", chain)
 }
 
+func TestBuildWindowsProxyServerPrefersSingleHTTPAddress(t *testing.T) {
+	proxyServer, err := buildWindowsProxyServer(&localProxySet{
+		HTTP:   &localProxyEndpoint{Host: "127.0.0.1", Port: 8080},
+		SOCKS5: &localProxyEndpoint{Host: "127.0.0.1", Port: 1080},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:8080", proxyServer)
+}
+
+func TestBuildWindowsProxyServerDeclaresSOCKS5Scheme(t *testing.T) {
+	proxyServer, err := buildWindowsProxyServer(&localProxySet{
+		SOCKS5: &localProxyEndpoint{Host: "127.0.0.1", Port: 1080},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "socks=socks5://127.0.0.1:1080", proxyServer)
+}
+
+func TestBuildWindowsProxyServerRequiresEndpoint(t *testing.T) {
+	_, err := buildWindowsProxyServer(nil)
+	assert.EqualError(t, err, "no local proxy endpoints available")
+}
+
 func TestPACURLHostNormalizesWildcardHost(t *testing.T) {
 	host, err := pacURLHost("0.0.0.0:9090")
 	require.NoError(t, err)

@@ -4,8 +4,6 @@ package cmd
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows/registry"
@@ -135,21 +133,6 @@ func applyWindowsManual(proxies *localProxySet) error {
 		return err
 	}
 	return notifyWindowsProxyChanged()
-}
-
-func buildWindowsProxyServer(proxies *localProxySet) (string, error) {
-	if proxies == nil || !proxies.HasAny() {
-		return "", errors.New("no local proxy endpoints available")
-	}
-	parts := make([]string, 0, 3)
-	if proxies.HTTP != nil {
-		parts = append(parts, fmt.Sprintf("http=%s", proxies.HTTP.Addr()))
-		parts = append(parts, fmt.Sprintf("https=%s", proxies.HTTP.Addr()))
-	}
-	if proxies.SOCKS5 != nil {
-		parts = append(parts, fmt.Sprintf("socks=%s", proxies.SOCKS5.Addr()))
-	}
-	return strings.Join(parts, ";"), nil
 }
 
 func notifyWindowsProxyChanged() error {

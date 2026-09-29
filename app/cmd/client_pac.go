@@ -122,6 +122,17 @@ func buildPACProxyChain(proxies *localProxySet) string {
 	return strings.Join(parts, "; ")
 }
 
+func buildWindowsProxyServer(proxies *localProxySet) (string, error) {
+	if proxies == nil || !proxies.HasAny() {
+		return "", errors.New("no local proxy endpoints available")
+	}
+	// A single HTTP proxy address works for both HTTP and HTTPS in Windows' common proxy setting.
+	if proxies.HTTP != nil {
+		return proxies.HTTP.Addr(), nil
+	}
+	return "socks=socks5://" + proxies.SOCKS5.Addr(), nil
+}
+
 type pacServer struct {
 	listener net.Listener
 	server   *stdhttp.Server
