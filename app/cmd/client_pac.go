@@ -59,12 +59,18 @@ func buildLocalProxySet(config clientConfig) (*localProxySet, error) {
 		if err != nil {
 			return nil, configError{Field: "http.listen", Err: err}
 		}
+		if ep.Port == 0 {
+			return nil, configError{Field: "http.listen", Err: errors.New("port 0 cannot be used with PAC or system proxy")}
+		}
 		proxies.HTTP = ep
 	}
 	if config.SOCKS5 != nil && config.SOCKS5.Listen != "" {
 		ep, err := parseLocalProxyEndpoint(config.SOCKS5.Listen)
 		if err != nil {
 			return nil, configError{Field: "socks5.listen", Err: err}
+		}
+		if ep.Port == 0 {
+			return nil, configError{Field: "socks5.listen", Err: errors.New("port 0 cannot be used with PAC or system proxy")}
 		}
 		proxies.SOCKS5 = ep
 	}
@@ -82,6 +88,9 @@ func parseLocalProxyEndpoint(listen string) (*localProxyEndpoint, error) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		return nil, err
+	}
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("port must be between 0 and 65535, got %d", port)
 	}
 	switch host {
 	case "", "0.0.0.0", "::":

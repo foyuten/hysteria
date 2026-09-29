@@ -26,6 +26,23 @@ func TestBuildLocalProxySetUsesHTTPAndSOCKS5(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:1080", proxies.SOCKS5.Addr())
 }
 
+func TestBuildLocalProxySetRejectsEphemeralPort(t *testing.T) {
+	_, err := buildLocalProxySet(clientConfig{
+		HTTP: &httpConfig{Listen: "127.0.0.1:0"},
+	})
+	assert.EqualError(t, err, "invalid config: http.listen: port 0 cannot be used with PAC or system proxy")
+
+	_, err = buildLocalProxySet(clientConfig{
+		SOCKS5: &socks5Config{Listen: "127.0.0.1:0"},
+	})
+	assert.EqualError(t, err, "invalid config: socks5.listen: port 0 cannot be used with PAC or system proxy")
+}
+
+func TestParseLocalProxyEndpointRejectsInvalidPortRange(t *testing.T) {
+	_, err := parseLocalProxyEndpoint("127.0.0.1:65536")
+	assert.EqualError(t, err, "port must be between 0 and 65535, got 65536")
+}
+
 func TestBuildPACProxyChain(t *testing.T) {
 	chain := buildPACProxyChain(&localProxySet{
 		HTTP:   &localProxyEndpoint{Host: "127.0.0.1", Port: 8080},
