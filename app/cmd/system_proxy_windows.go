@@ -37,13 +37,12 @@ func configureSystemProxy(proxies *localProxySet, pacURL string) (func() error, 
 		err = applyWindowsManual(proxies)
 	}
 	if err != nil {
-		return nil, err
+		rollbackErr := restoreWindowsProxyState(state)
+		notifyErr := notifyWindowsProxyChanged()
+		return nil, errors.Join(err, rollbackErr, notifyErr)
 	}
 	return func() error {
-		if err := restoreWindowsProxyState(state); err != nil {
-			return err
-		}
-		return notifyWindowsProxyChanged()
+		return errors.Join(restoreWindowsProxyState(state), notifyWindowsProxyChanged())
 	}, nil
 }
 
@@ -75,28 +74,23 @@ func restoreWindowsProxyState(state *windowsProxyState) error {
 		return err
 	}
 	defer key.Close()
+	var restoreErr error
 	if state.proxyEnableSet {
-		if err := key.SetDWordValue("ProxyEnable", uint32(state.proxyEnableValue)); err != nil {
-			return err
-		}
+		restoreErr = errors.Join(restoreErr, key.SetDWordValue("ProxyEnable", uint32(state.proxyEnableValue)))
 	} else {
 		_ = key.DeleteValue("ProxyEnable")
 	}
 	if state.proxyServerSet {
-		if err := key.SetStringValue("ProxyServer", state.proxyServerValue); err != nil {
-			return err
-		}
+		restoreErr = errors.Join(restoreErr, key.SetStringValue("ProxyServer", state.proxyServerValue))
 	} else {
 		_ = key.DeleteValue("ProxyServer")
 	}
 	if state.autoConfigSet {
-		if err := key.SetStringValue("AutoConfigURL", state.autoConfigValue); err != nil {
-			return err
-		}
+		restoreErr = errors.Join(restoreErr, key.SetStringValue("AutoConfigURL", state.autoConfigValue))
 	} else {
 		_ = key.DeleteValue("AutoConfigURL")
 	}
-	return nil
+	return restoreErr
 }
 
 func applyWindowsPAC(proxies *localProxySet, pacURL string) error {

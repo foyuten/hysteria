@@ -51,7 +51,7 @@ func configureSystemProxy(proxies *localProxySet, pacURL string) (func() error, 
 		err = applyMacOSManual(services, proxies)
 	}
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, restoreMacOSProxyState(state))
 	}
 	return func() error {
 		return restoreMacOSProxyState(state)

@@ -44,7 +44,7 @@ func configureSystemProxy(proxies *localProxySet, pacURL string) (func() error, 
 		err = applyGSettingsManual(proxies)
 	}
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, restoreGSettingsValues(values))
 	}
 	return func() error {
 		return restoreGSettingsValues(values)
