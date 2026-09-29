@@ -98,6 +98,20 @@ func TestClientConfig(t *testing.T) {
 		},
 		Resolver: serverConfigResolver{
 			Type: "https",
+			TCP: serverConfigResolverTCP{
+				Addr:    "1.1.1.1:5353",
+				Timeout: time.Second,
+			},
+			UDP: serverConfigResolverUDP{
+				Addr:    "8.8.8.8:5353",
+				Timeout: 2 * time.Second,
+			},
+			TLS: serverConfigResolverTLS{
+				Addr:     "dns.example.org:853",
+				Timeout:  3 * time.Second,
+				SNI:      "resolver-tls.example.net",
+				Insecure: true,
+			},
 			HTTPS: serverConfigResolverHTTPS{
 				Addr:     "dns.example.net",
 				Timeout:  5 * time.Second,
@@ -106,6 +120,7 @@ func TestClientConfig(t *testing.T) {
 			},
 		},
 		ACL: clientConfigACL{
+			File: "client.acl",
 			Inline: []string{
 				"direct(localhost)",
 				"reject(blocked.example)",

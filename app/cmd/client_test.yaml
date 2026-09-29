@@ -74,6 +74,17 @@ bandwidth:
 
 resolver:
   type: https
+  tcp:
+    addr: 1.1.1.1:5353
+    timeout: 1s
+  udp:
+    addr: 8.8.8.8:5353
+    timeout: 2s
+  tls:
+    addr: dns.example.org:853
+    timeout: 3s
+    sni: resolver-tls.example.net
+    insecure: true
   https:
     addr: dns.example.net
     timeout: 5s
@@ -81,6 +92,7 @@ resolver:
     insecure: true
 
 acl:
+  file: client.acl
   inline:
     - direct(localhost)
     - reject(blocked.example)
